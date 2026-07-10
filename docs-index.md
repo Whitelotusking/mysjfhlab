@@ -1,12 +1,13 @@
 # 文档索引
 
-更新时间：2026-07-09
+更新时间：2026-07-10
 
 ## riverraid
 
-- 路径：`riverraid/Riverraid_Project_Document_CN_20260709.md`
-- 内容：BlendRL 在 Atari Riverraid 环境上的强化学习实验文档
-- 状态：初始导入
+- 旧主文档路径：`riverraid/Riverraid_Project_Document_CN_20260709.md`
+- 当前维护版路径：`riverraid/riverraid-wm/Riverraid_Project_Document_CN_20260710_maintained.md`
+- 内容：BlendRL 在 Atari Riverraid 环境上的强化学习实验文档，当前主线为补训练 Riverraid clean World Model seed0 / seed2，并为后续 frozen WM 辅助 policy 训练提供 checkpoint。
+- 状态：2026-07-10 维护版已同步
 - 后续维护：每次代码、实验配置、checkpoint、结果或问题发生变化后更新该文档
 
 ## 维护规则
