@@ -1,875 +1,639 @@
-# Riverraid 项目文档（维护版）
+# Riverraid 世界模型项目文档（维护版）
 
-更新时间：2026-07-10  
-维护依据：`Riverraid_Project_Document_CN_20260709.md`、当前 yingnan 机器实际 GPU 状态、训练日志、输出目录与本次会话中已确认的操作记录。  
-维护原则：代码和实际配置优先于旧文档；不确定内容标注“需确认”；只保留对后续开发、运行、部署、排错有价值的信息。
-
----
-
-## 1. 项目简介
-
-本项目是 `BlendRL` 在 Atari `Riverraid` 环境上的强化学习实验分支，核心目标是验证以下流程：
-
-1. Riverraid baseline policy 训练。
-2. Riverraid clean World Model 训练。
-3. 使用 frozen clean World Model 作为仲裁器辅助 policy 训练。
-
-当前 Riverraid 主线采用与 L40 机器一致的版本：奖励函数为 `sign(original_reward)`，不是 shaped reward。此前 yingnan 主仓存在 reward 版本混杂问题，已经通过同步 L40 版本修正；受污染的旧实验已移动到 quarantine，不应作为最终结果来源。
-
-当前主线已经从“world-model-assisted policy 训练”切换为“补训练 Riverraid clean World Model seed0 / seed2”。
+更新时间：2026-07-12  
+维护依据：`Riverraid_Project_Document_CN_20260709.md`、`blendrl_document_maintenance.md`、当前仓库既有维护版文档，以及已确认的实验记录。  
+维护原则：代码、配置、checkpoint、运行日志和实际评测脚本优先于旧文档；不确定内容标注“需确认”；删除已经过时的临时运行状态。
 
 ---
 
-## 2. 当前项目状态
+## 1. 项目定位
 
-### 2.1 已完成
+本项目是 `BlendRL` 在 Atari `Riverraid` 环境上的世界模型实验分支，核心目标是验证：
 
-1. 已停止 GPU0 上原来的 Riverraid 世界模型辅助 baseline 训练。
-2. 原辅助训练主进程 `PID 2693553` 已不再出现在 `nvidia-smi` 中。
-3. 原辅助训练输出目录保留为历史实验目录：
+1. Riverraid baseline / BlendRL policy 的训练与评测。
+2. Riverraid clean World Model checkpoint 的复用。
+3. 三个冻结世界模型对候选动作进行 rollout 评分。
+4. 在 sampled Blend 与 sampled Neural 候选动作冲突时，用三世界模型的预测优势决定是否允许 Neural 覆盖 Blend。
 
-   ```text
-   /home/yingnan/??/czx/blendRL/out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709
-   ```
-
-4. 该历史 run 曾运行到 5M steps 之后，并生成过 `step_5000000.pth`。
-5. 已启动 GPU0 clean WM 守护脚本。
-6. 已在 GPU0 上启动 Riverraid clean WM seed0。
-7. clean WM seed2 已排队，等待 seed0 完成后串行启动。
-8. GPU1 上两个 Seaquest 训练进程未被修改。
-
-### 2.2 当前正在运行
-
-当前正在运行的是：
-
-```text
-Riverraid clean World Model seed0
-GPU = 0
-PID = 2729122
-process = @HS_BlendeRL#first_epoch
-```
-
-当前输出目录：
-
-```text
-/home/yingnan/??/czx/blendRL/out/61_riverraid_clean_wm_seed0_gpu0_20260710
-```
-
-训练日志：
-
-```text
-/home/yingnan/??/czx/blendRL/out/61_riverraid_clean_wm_seed0_gpu0_20260710/launch_logs/train.log
-```
-
-日志已确认出现：
-
-```text
-Using riverraid multiprocessing backend with 32 worker processes
-Changed reward function to /home/yingnan/??/czx/blendRL/in/envs/riverraid/blenderl_reward.py
-```
-
-这说明当前 clean WM seed0 使用的是 Riverraid multiprocessing backend，并且 reward 路径指向当前项目内的 Riverraid reward 文件。
-
-### 2.3 当前排队任务
-
-seed2 已由 GPU0 guard 排队：
-
-```text
-/home/yingnan/??/czx/blendRL/out/62_riverraid_clean_wm_seed2_gpu0_20260710
-```
-
-当前状态：
-
-```text
-seed2 尚未启动，等待 seed0 完成并生成最终 checkpoint 后串行启动。
-```
-
-### 2.4 当前 GPU 状态
-
-截至最近一次检查：
-
-```text
-GPU0:
-  运行 Riverraid clean WM seed0
-  PID 2729122
-  显存占用约 16.7GB
-
-GPU1:
-  仍有两个 Seaquest 训练进程
-  PID 2703432
-  PID 2713685
-  总显存占用约 20GB
-```
-
-GPU1 当前不建议再启动 Riverraid clean WM 或其他大显存任务。
-
----
-
-## 3. 主要功能
-
-项目当前已有的 Riverraid 核心功能如下。
-
-### 3.1 Riverraid 多进程环境后端
-
-当前训练使用 `MultiprocessRiverraidEnv` 支持并行环境采样。当前主线配置为：
-
-```text
---num-envs 128
---num-steps 128
---mp-num-workers 32
-```
-
-相关实现：
-
-```text
-alt_runtime/riverraid_mp_env.py
-```
-
-### 3.2 BlendRL policy 训练
-
-主训练入口：
-
-```text
-train_blenderl.py
-```
-
-当前常用策略结构：
-
-```text
-algorithm = blender
-blender_mode = logic
-blend_function = softmax
-actor_mode = hybrid
-reasoner = nsfr
-rules = default
-```
-
-### 3.3 Clean World Model 训练
-
-clean WM 训练入口：
-
-```text
-train_blenderl_clean_isolated.py
-```
-
-当前已确认该入口用于 Riverraid clean WM seed0 / seed2 补训练。
-
-clean WM 训练的目标不是让 WM 介入 policy 决策，而是在线训练并保存 clean world model checkpoint。当前配置使用：
-
-```text
---use-world-model-arbiter
---no-world-model-freeze
---world-model-warmup-steps 999999999
---world-model-planning-mode triggered
---world-model-candidate-action-mode argmax_pair
-```
-
-由于 `world_model_warmup_steps = 999999999`，训练过程中 policy 基本不受 WM 仲裁影响，主要目的是得到 clean WM checkpoint。
-
-### 3.4 World Model 仲裁器
-
-核心实现：
-
-```text
-blendrl/agents/world_model_arbiter.py
-blendrl/agents/blender_agent.py
-```
-
-历史辅助训练使用 frozen clean WM 作为仲裁器：
-
-```text
---use-world-model-arbiter
---world-model-freeze
---world-model-planning-mode always_plan
---world-model-candidate-action-mode sample_triplet_vs_blend
---world-model-horizon 5
-```
-
-该历史辅助训练已停止，目录保留用于结果分析。
-
----
-
-## 4. 技术栈
-
-本项目不是传统 Web 项目，没有前端、后端服务和数据库。
-
-| 类型 | 当前情况 |
-|---|---|
-| 前端 | 无传统前端；训练监控主要依赖日志和 TensorBoard |
-| 后端 | 无 Web 后端；核心为 Python 训练脚本 |
-| 数据库 | 未发现数据库依赖 |
-| 主要语言 | Python |
-| 深度学习框架 | PyTorch |
-| 强化学习环境 | Atari / ALE / OCAtari，具体版本需确认 |
-| 并行环境 | Python multiprocessing / forkserver，多进程 Atari 环境 |
-| 符号推理 | NSFR / Nudge 相关模块 |
-| 可视化与监控 | TensorBoard event logs，命令行日志 |
-| 部署方式 | Linux 服务器上通过 `.venv/bin/python`、bash 脚本、GPU CUDA 运行 |
-| 第三方在线服务 | 当前训练使用 `--no-track`，未启用 WandB；是否还有其他服务需确认 |
-
-当前 Python 环境路径：
-
-```text
-/home/yingnan/??/czx/blendRL/.venv/bin/python
-```
-
-当前 yingnan GPU 环境：
-
-```text
-yingnan: 2 × NVIDIA GeForce RTX 4090
-```
-
-L40 参考仓库路径：
-
-```text
-/data/czx/blendRL
-```
-
----
-
-## 5. 项目结构
-
-主仓路径：
-
-```text
-/home/yingnan/??/czx/blendRL
-```
-
-Riverraid 相关主要文件：
-
-```text
-train_blenderl.py
-train_blenderl_clean_isolated.py
-alt_runtime/riverraid_mp_env.py
-in/envs/riverraid/blenderl_reward.py
-in/envs/riverraid/env.py
-in/envs/riverraid/env_vectorized.py
-in/envs/riverraid/valuation.py
-in/envs/riverraid/logic/default/
-blendrl/agents/world_model_arbiter.py
-blendrl/agents/blender_agent.py
-```
-
-当前 clean WM GPU0 守护脚本：
-
-```text
-scripts/riverraid_clean_wm_gpu0_guard_20260710.sh
-```
-
-当前 clean WM seed0 输出目录：
-
-```text
-out/61_riverraid_clean_wm_seed0_gpu0_20260710
-```
-
-当前 clean WM seed2 预留输出目录：
-
-```text
-out/62_riverraid_clean_wm_seed2_gpu0_20260710
-```
-
-历史辅助训练目录：
-
-```text
-out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709
-```
-
-旧混杂实验留档目录：
-
-```text
-/home/yingnan/riverraid_mismatch_quarantine_20260709_1750
-```
-
-同步 L40 前的备份目录：
-
-```text
-/home/yingnan/??/czx/blendRL/.riverraid_sync_backup_20260709_1750_l40_sync
-```
-
-从 L40 拷贝来的 Riverraid isolated 目录：
-
-```text
-/home/yingnan/riverraid_wm_from_l40_20260707
-```
-
----
-
-## 6. 运行方式
-
-### 6.1 环境要求
-
-已确认环境：
-
-```text
-OS: Linux
-GPU: NVIDIA GeForce RTX 4090
-Python: 使用项目内 .venv
-CUDA: 需可用
-```
-
-检查 Python：
-
-```bash
-cd /home/yingnan/??/czx/blendRL
-./.venv/bin/python -V
-```
-
-检查 GPU：
-
-```bash
-nvidia-smi
-```
-
-### 6.2 当前 clean WM seed0 / seed2 运行方式
-
-当前主线通过 GPU0 guard 串行运行 clean WM seed0 和 seed2。
-
-脚本：
-
-```text
-scripts/riverraid_clean_wm_gpu0_guard_20260710.sh
-```
-
-查看状态：
-
-```bash
-cd /home/yingnan/??/czx/blendRL
-scripts/riverraid_clean_wm_gpu0_guard_20260710.sh status
-```
-
-查看 seed0 日志：
-
-```bash
-cd /home/yingnan/??/czx/blendRL
-tail -n 120 out/61_riverraid_clean_wm_seed0_gpu0_20260710/launch_logs/train.log
-```
-
-查看 GPU：
-
-```bash
-nvidia-smi
-```
-
-### 6.3 clean WM guard 运行逻辑
-
-当前 GPU0 guard 的设计逻辑：
-
-```text
-1. 检查 GPU0 空闲显存。
-2. 当 GPU0 空闲显存达到阈值后启动 seed0。
-3. seed0 完成并生成 step_20000000.pth 后，启动 seed2。
-4. 不主动停止其他 GPU 进程。
-5. 单个 seed 失败后停止 guard，避免反复重启污染目录。
-```
-
-当前 guard 进程：
-
-```text
-PID 2728425
-command: bash scripts/riverraid_clean_wm_gpu0_guard_20260710.sh daemon
-```
-
-说明：当前已观察到 `out/riverraid_clean_wm_gpu0_guard_20260710/guard.pid` 存在，但 `guard.log` 是否稳定写入需确认。排错时优先查看 seed0 训练日志和 `nvidia-smi`。
-
-### 6.4 历史辅助训练运行方式
-
-历史辅助训练脚本：
-
-```text
-launch_riverraid_purewm_bd0_d05_seed0_l40sync_20260709.sh
-```
-
-历史输出目录：
-
-```text
-out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709
-```
-
-该 run 已停止，不再作为当前正在运行任务。
-
-历史 run 的关键配置：
-
-```text
-world_model_freeze = true
-world_model_planning_mode = always_plan
-world_model_candidate_action_mode = sample_triplet_vs_blend
-world_model_delta = 0.5
-world_model_horizon = 5
-world_model_warmup_steps = 0
-```
-
-该 run 使用 clean WM seed1 20M checkpoint 作为 frozen world model：
-
-```text
-/home/yingnan/riverraid_wm_from_l40_20260707/out/02_world_model_training/riverraid_gpu1_parallel/clean/runs/riverraid_softmax_blender_logic_lr_0.00025_llr_0.00025_blr_0.00025_gamma_0.99_bentcoef_0.01_numenvs_128_steps_128_backend_mp_workers_32__1_gpu1_parallel_online_wm_clean_seed1/checkpoints/step_20000000.pth
-```
-
----
-
-## 7. 配置说明
-
-### 7.1 当前 clean WM 训练核心参数
-
-```text
-env_name = riverraid
-seed = 0 / 2
-total_timesteps = 20005000
-num_envs = 128
-num_steps = 128
-mp_num_workers = 32
-save_steps = 5000000
-algorithm = blender
-blender_mode = logic
-blend_function = softmax
-actor_mode = hybrid
-rules = default
-reasoner = nsfr
-track = false
-```
-
-World Model 训练参数：
-
-```text
-use_world_model_arbiter = true
-world_model_freeze = false
-world_model_warmup_steps = 999999999
-world_model_planning_mode = triggered
-world_model_candidate_action_mode = argmax_pair
-world_model_delta = 0.0
-world_model_branch_delta = 0.0
-world_model_horizon = 5
-world_model_update_epochs = 4
-world_model_learning_rate = 0.0001
-world_model_reward_head_type = scalar
-world_model_state_loss_coef = 1.0
-world_model_neural_state_loss_coef = 1.0
-world_model_reward_loss_coef = 1.0
-world_model_done_loss_coef = 0.25
-```
-
-### 7.2 当前环境变量
-
-推荐保留：
-
-```bash
-CUDA_VISIBLE_DEVICES=0
-PYTHONUNBUFFERED=1
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-OMP_NUM_THREADS=1
-```
-
-不同 seed 的输出目录通过 `BLENDRL_OUT_PATH` 指定，例如：
-
-```bash
-BLENDRL_OUT_PATH=/home/yingnan/??/czx/blendRL/out/61_riverraid_clean_wm_seed0_gpu0_20260710
-```
-
-### 7.3 Reward 配置
-
-当前 Riverraid reward 文件：
-
-```text
-in/envs/riverraid/blenderl_reward.py
-```
-
-当前 reward 定义：
-
-```python
-import numpy as np
-
-def reward_function(self) -> float:
-    return float(np.sign(self.org_reward))
-```
-
-这是当前版本一致性的关键。不要把 shaped reward 实验和当前 sign reward 实验混用。
-
-### 7.4 数据库、端口和第三方服务
-
-数据库：
-
-```text
-未发现数据库配置。
-```
-
-端口：
-
-```text
-训练本身不占用固定 Web 端口。
-TensorBoard 端口需手动指定，常用 6006，但实际访问方式需确认。
-```
-
-第三方服务：
-
-```text
-当前训练使用 --no-track。
-WandB 或其他在线 tracking 是否需要启用：需确认。
-```
-
----
-
-## 8. 核心模块说明
-
-### 8.1 Riverraid 多进程环境
-
-文件：
-
-```text
-alt_runtime/riverraid_mp_env.py
-```
-
-作用：
-
-1. 封装 OCAtari/ALE Riverraid 环境。
-2. 将多个环境分配到多进程 worker 中。
-3. 将 `logic_state`、`neural_state`、`reward`、`done` 等返回给训练主进程。
-4. 支持 `num_envs=128` 和 `mp_num_workers=32` 的并行采样。
-
-### 8.2 Riverraid 逻辑规则
-
-目录：
-
-```text
-in/envs/riverraid/logic/default/
-```
-
-主要规则：
-
-```prolog
-noop(X):-.
-right_to_fuel(X):-close_by_fuel(P,F),left_of_fuel(P,F).
-left_to_fuel(X):-close_by_fuel(P,F),right_of_fuel(P,F).
-fire_at_bridge(X):-visible_bridge(B),same_level_bridge(P,B).
-right_to_bridge(X):-visible_bridge(B),left_of_bridge(P,B).
-left_to_bridge(X):-visible_bridge(B),right_of_bridge(P,B).
-```
-
-Blender 选择神经/逻辑分支的规则：
-
-```prolog
-neural_agent(X):-close_by_enemy(P,S,H,J).
-logic_agent(X):-nothing_around(X).
-logic_agent(X):-close_by_fuel(P,F).
-logic_agent(X):-visible_bridge(B).
-```
-
-已知性能问题：`close_by_enemy(P,S,H,J)` 是 4 元谓词，会增加 NSFR 推理开销。在 WM rollout 中被反复调用时，会降低 Riverraid+WM SPS。当前决定暂不修改规则。
-
-### 8.3 BlendRL Agent
-
-文件：
-
-```text
-blendrl/agents/blender_agent.py
-```
-
-关键职责：
-
-1. 计算神经策略动作分布。
-2. 计算符号逻辑策略动作分布。
-3. 通过 blender weights 合成最终动作分布。
-4. 启用 WM 时调用 `_compute_world_model_source` 决定是否用 WM 仲裁。
-5. WM rollout 中调用 `_rollout_policy_action` 和 `_rollout_blended_value`。
-
-### 8.4 World Model Arbiter
-
-文件：
-
-```text
-blendrl/agents/world_model_arbiter.py
-```
-
-核心类：
-
-```text
-WorldModelArbiterConfig
-VisualSymbolicWorldModelArbiter
-```
-
-核心方法：
-
-```text
-predict_transition
-rollout_return
-compute_losses
-```
-
----
-
-## 9. 常见问题与排错
-
-### 9.1 Riverraid 结果和 L40 baseline 对不上
-
-原因：此前 yingnan 主仓曾使用 shaped reward，而 L40 使用 sign reward。两者不能直接对比。
-
-检查：
-
-```bash
-cat /home/yingnan/??/czx/blendRL/in/envs/riverraid/blenderl_reward.py
-```
-
-应看到：
+当前 Riverraid 主线采用与 L40 机器一致的奖励版本：
 
 ```python
 return float(np.sign(self.org_reward))
 ```
 
-处理：不要使用 quarantine 中的旧实验作为最终结论。
+因此当前文档不再沿用旧的 shaped reward 结果，也不再把旧的 reward 混杂实验作为正式结论来源。
 
-### 9.2 GPU OOM / 显存不足
+当前主线已经从“补训练 Riverraid clean World Model seed0 / seed2”更新为：
 
-当前经验：Riverraid clean WM 训练在 4090 上可能占用约 16GB 以上显存。
+```text
+Riverraid 三世界模型评测与 tau 扫描
+```
 
-启动前必须检查：
+旧文档中关于 “clean WM seed0 正在运行、seed2 排队、out/51 保留为历史辅助训练目录” 的状态已经过时，本版已删除。
+
+---
+
+## 2. 当前状态
+
+### 2.1 已完成
+
+1. 已从原项目创建独立开发副本：
+
+   ```text
+   原项目真实目录：/home/yingnan/??/czx/blendRL
+   原项目快捷链接：/home/yingnan/blendRL_project_k4 -> /home/yingnan/??/czx/blendRL
+   当前开发目录：/home/yingnan/blendRL_k4_dev
+   ```
+
+2. 当前开发目录拥有独立源代码和 Git 仓库，但共享原项目的环境与输出目录：
+
+   ```text
+   /home/yingnan/blendRL_k4_dev/.venv -> 原项目/.venv
+   /home/yingnan/blendRL_k4_dev/out   -> 原项目/out
+   ```
+
+3. 三世界模型 rollout 已实现并测试：
+
+   ```text
+   rollout_action_mode = argmax | dist
+   mc_rollouts = K
+   common_random_numbers = CRN
+   planning_seed_offset = 独立规划随机种子
+   ```
+
+4. 已实现并测试：
+
+   ```text
+   dist + K4 + CRN
+   dist + K1 + CRN
+   独立规划 RNG 保存和恢复
+   K 轨迹批量展开
+   模型间标准差与轨迹内标准差分离
+   训练和评测共用相同 rollout 逻辑
+   ```
+
+5. Riverraid 三世界模型已确认使用三份独立 clean checkpoint：
+
+   ```text
+   seed0：yingnan 完整训练结果
+   seed1：已从 L40 同步到 yingnan
+   seed2：已导入 yingnan 的 WM-only checkpoint
+   ```
+
+   后续 Riverraid 运行不需要再访问 L40。
+
+6. Riverraid 评测已新增：
+
+   ```text
+   --wm-checkpoint-paths
+   ```
+
+   支持直接加载完整 checkpoint 或 WM-only checkpoint。
+
+7. Riverraid 评测已新增：
+
+   ```text
+   --full-game-episodes
+   ```
+
+   用于修复 `EpisodicLifeEnv` 将“掉一条命”误算为完整游戏的问题。
+
+8. 已删除容易造成误解的不完整实验目录：
+
+   ```text
+   out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709
+   ```
+
+9. 已审计纯 PPO 入口：
+
+   ```text
+   train_blenderl.py --algorithm ppo
+   ```
+
+   该入口实际仍会创建 BlendRL，不是真正的纯 PPO。旧 `train_neuralppo.py` 也不能直接作为正式公平基线。
+
+### 2.2 当前运行中
+
+截至本次维护依据中的检查，当前 Riverraid 主要运行任务为：
+
+```text
+Riverraid tau = 0.0 / 0.1 / 0.2 / 0.3 四组 100 局完整游戏评测
+GPU = 0
+每组 32 个环境
+每组 8 个 worker
+总 worker 数控制为 32
+```
+
+注意：这类运行状态会继续变化，文档中不再记录临时 PID、瞬时显存和未完成任务的“当前步数”。需要实时确认时使用：
 
 ```bash
 nvidia-smi
+ps -ef | grep python
+tail -f out/<实验>/launch_logs/train.log
 ```
 
-建议：
+### 2.3 阶段性 Riverraid tau 结果
+
+以下结果来自未完成的动态评测，只能作为阶段观察，不能写入最终论文表格：
+
+| tau | 已完成局数 | 平均原始游戏分 | 中位数 | Neural 动作占比 |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.0 | 36 | 2644.7 | 2675 | 34.7% |
+| 0.1 | 45 | 2499.8 | 2540 | 19.1% |
+| 0.2 | 58 | 2424.5 | 2360 | 11.3% |
+| 0.3 | 69 | 2332.3 | 2340 | 7.5% |
+| baseline | 100 | 2225.9 | 2165 | 0% |
+
+阶段性观察：
 
 ```text
-1. 不要在 GPU1 当前已有两个 Seaquest 进程时再启动 Riverraid clean WM。
-2. 保留 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。
-3. 保留 OMP_NUM_THREADS=1。
-4. 如果目标 GPU 空闲显存不足，不要强行启动训练。
-```
-
-### 9.3 Riverraid+WM 速度明显慢于 Seaquest+WM
-
-已观察到的历史现象：
-
-```text
-Seaquest + WM ≈ 355 SPS
-Riverraid + WM ≈ 118~133 SPS
-Riverraid clean / no WM ≈ 565 SPS
-```
-
-主要原因：
-
-1. Riverraid+WM 的 `trigger_rate` 接近 1。
-2. `always_plan + sample_triplet_vs_blend + horizon=5` 会对多个候选动作反复 rollout。
-3. Riverraid 的 4 元谓词 `close_by_enemy(P,S,H,J)` 使 NSFR 推理成本较高。
-
-当前决策：暂不改规则，继续使用原规则。
-
-### 9.4 旧实验误用
-
-不应再直接使用以下目录作为最终结论来源：
-
-```text
-/home/yingnan/riverraid_mismatch_quarantine_20260709_1750
-```
-
-该目录只能作为历史追溯参考。
-
-### 9.5 Git 工作区不干净
-
-当前仓库存在较多 modified / untracked 文件。Riverraid 关键文件已和 L40 对齐，但整体 git 状态仍需整理。
-
-建议：
-
-```text
-1. 为当前 Riverraid 版本建立 commit 或 tag。
-2. 将 quarantine、backup、历史脚本和正式实验脚本分开管理。
-3. 运行前记录关键文件 hash。
-```
-
-### 9.6 B.task_relay 工具使用规范
-
-以后所有 `B.task_relay` 调用必须先预览再执行：
-
-```text
-1. 先调用 translate=true，只生成预览命令。
-2. 检查预览命令是否符合目的。
-3. 再调用 translate=false 执行确认后的命令。
-4. 不跳过预览直接执行。
-```
-
-适用场景：
-
-```text
-nvidia-smi 检查
-训练启动
-训练停止
-日志检查
-进程状态检查
-```
-
-对于停止进程等敏感操作，直接写 `kill` 命令可能被平台安全检查拦截。更稳的方式是用自然语言描述“安全停止某个已确认训练任务”，让工具端先生成预览命令。
-
----
-
-## 10. 文档维护结果
-
-### 10.1 本次变更摘要
-
-本次变更的核心是：停止原 GPU0 上的 Riverraid 世界模型辅助 baseline 训练，并将当前主线切换到 GPU0 上补训练 Riverraid clean World Model。
-
-具体变化：
-
-```text
-1. out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709 从“当前运行”改为“历史实验”。
-2. 新增 out/61_riverraid_clean_wm_seed0_gpu0_20260710 作为当前运行目录。
-3. 新增 out/62_riverraid_clean_wm_seed2_gpu0_20260710 作为后续排队目录。
-4. 新增 scripts/riverraid_clean_wm_gpu0_guard_20260710.sh 作为当前 clean WM 串行训练守护脚本。
-5. 更新 GPU0/GPU1 当前使用情况。
-6. 更新 B.task_relay 运维规范。
-```
-
-### 10.2 需要更新的文档
-
-建议更新：
-
-```text
-Riverraid_Project_Document_CN_20260709.md
-riverraid/riverraid-wm/README.md
-riverraid/riverraid-wm/maintenance-result-20260710.md
-docs-index.md
-CHANGELOG.md
-```
-
-如果仓库中存在以下文件，也建议同步更新：
-
-```text
-docs/troubleshooting.md
-docs/experiments.md
-docs/gpu-runbook.md
-```
-
-### 10.3 过时内容
-
-旧文档中过时内容：
-
-```text
-1. out/51 仍是当前正在运行实验 —— 已过时，该 run 已停止。
-2. 当前 checkpoint 只有 step_0.pth —— 已过时，out/51 曾生成 step_5000000.pth。
-3. train_blenderl_clean_isolated.py 是否继续用于 seed0/seed2 需确认 —— 已确认正在用于 clean WM seed0/seed2。
-4. 是否需要补 clean WM seed0/seed2 需确认 —— 已决定补，seed0 已启动，seed2 已排队。
-5. GPU1 clean WM guard 作为候选路径 —— 当前不建议，GPU1 被 Seaquest 占用较高。
-6. nohup 启动 out/51 的说明 —— 仅保留为历史，不再作为当前主线启动方式。
-```
-
-### 10.4 缺失内容
-
-旧文档缺少：
-
-```text
-1. GPU0 clean WM guard 脚本路径。
-2. 当前 guard 进程 PID 2728425。
-3. 当前 clean WM seed0 训练进程 PID 2729122。
-4. out/61 seed0 输出目录和日志路径。
-5. out/62 seed2 排队目录。
-6. 原辅助训练 PID 2693553 已停止的状态。
-7. B.task_relay 必须先 translate=true 预览的运维规则。
-8. guard.log 当前未确认有效写入的问题。
-```
-
-### 10.5 矛盾内容
-
-当前发现的矛盾：
-
-```text
-1. 文档说当前主线是 frozen WM 辅助训练，但实际主线已变为 clean WM seed0 训练。
-2. 文档说 clean WM seed0/seed2 是否补齐需确认，但实际 seed0 已启动、seed2 已排队。
-3. 文档说 out/51 尚未到 5M checkpoint，但实际已生成 step_5000000.pth 后停止。
-4. 文档中 GPU1 clean WM OOM 是历史问题，但当前 GPU1 仍高占用，不应再放 Riverraid clean WM。
-5. 文档中 guard 日志路径未明确；实际 `guard.log` 未确认有效存在，应优先看 seed0 train.log。
-```
-
-### 10.6 建议修改内容
-
-建议将文档中的“当前正在运行”“运行方式”“常见问题”“后续待办”按本维护版对应章节替换。
-
-最小替换重点：
-
-```text
-1. 将 out/51 改为历史辅助训练。
-2. 将 out/61 改为当前 clean WM seed0 运行目录。
-3. 将 out/62 改为后续 clean WM seed2 排队目录。
-4. 增加 scripts/riverraid_clean_wm_gpu0_guard_20260710.sh。
-5. 增加查看状态、查看日志、查看 GPU 的命令。
-6. 增加 B.task_relay 运维规范。
-```
-
-### 10.7 当前项目状态
-
-当前已完成：
-
-```text
-1. 原 GPU0 Riverraid 世界模型辅助 baseline 训练已停止。
-2. GPU0 clean WM guard 已启动。
-3. Riverraid clean WM seed0 已启动。
-4. seed2 已排队。
-5. GPU1 Seaquest 进程未被修改。
-```
-
-当前未完成：
-
-```text
-1. clean WM seed0 尚未完成。
-2. clean WM seed2 尚未启动。
-3. seed0 的 step_5000000.pth 尚未确认生成。
-4. seed0 的 step_20000000.pth 尚未生成。
-5. guard.log 是否稳定写入需确认。
-6. GitHub 远端文档是否同步需确认。
-```
-
-下一步建议：
-
-```text
-1. 持续观察 out/61 是否推进。
-2. 到 5M 后检查 step_5000000.pth。
-3. seed0 完成后确认 guard 是否自动启动 seed2。
-4. 修正或确认 guard.log 输出位置。
-5. 将本维护版文档同步到仓库。
-6. clean WM seed0/seed2 完成后，再更新 frozen WM 辅助训练使用的 checkpoint 路径。
+低 tau 暂时表现更好，tau=0 当前阶段性均值最高。
+最终结论必须等待每组 100 局完整游戏完成。
 ```
 
 ---
 
-## 11. 后续待办
+## 3. 项目目录与环境风险
 
-1. 观察当前 clean WM seed0 是否正常推进。
-2. 到以下里程碑检查日志、SPS 和 checkpoint：
+### 3.1 服务器目录
 
-   ```text
-   0.5M
-   1M
-   2M
-   5M
-   10M
-   20M
-   ```
+```text
+原项目：/home/yingnan/??/czx/blendRL
+原项目快捷链接：/home/yingnan/blendRL_project_k4
+当前开发目录：/home/yingnan/blendRL_k4_dev
+```
 
-3. 到 5M 后确认是否生成：
+开发目录复用原项目环境和输出：
 
-   ```text
-   checkpoints/step_5000000.pth
-   ```
+```text
+.venv -> 原项目/.venv
+out   -> 原项目/out
+```
 
-4. 到 20M 后确认是否生成：
+因此需要注意：
 
-   ```text
-   checkpoints/step_20000000.pth
-   ```
+1. 不要在开发目录随意升级或删除 Python 依赖，因为会影响原项目环境。
+2. 不要删除不属于本次实验的 `out` 目录，因为会删除原项目真实结果。
+3. 两个目录不能使用相同输出名并发写入。
+4. 每次训练必须使用唯一的 `BLENDRL_OUT_PATH`。
+5. 启动前必须检查输出目录不存在。
 
-5. seed0 完成后确认 seed2 是否自动启动。
-6. clean WM seed0/seed2 完成后，再决定是否重新启动新的 frozen WM 辅助训练。
-7. 更新 GitHub 文档并提交 commit：需确认远端权限和同步方式。
-8. 整理 guard 脚本日志输出，确保 `guard.log` 可用于排错。
+### 3.2 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `BLENDRL_OUT_PATH` | 指定本次实验输出目录 |
+| `CUDA_VISIBLE_DEVICES` | 指定物理 GPU |
+| `PYTHONUNBUFFERED=1` | 立即刷新训练日志 |
+| `OMP_NUM_THREADS` | 控制 CPU 线程，评测并行时建议显式设置 |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | 减少 CUDA 内存碎片，可选 |
+| `PYTHONPATH=.` | 从项目根目录运行脚本时保证本地模块可导入 |
+
+当前没有 Docker、数据库、HTTP API 或 Web 服务配置。
+
+### 3.3 环境使用
+
+现有服务器环境：
+
+```bash
+cd /home/yingnan/blendRL_k4_dev
+source .venv/bin/activate
+```
+
+开发目录的 `.venv` 是原项目环境的符号链接。除非明确重建环境，否则不要执行依赖升级。
+
+重建环境时可参考：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+cd nsfr && ../.venv/bin/pip install -e . && cd ..
+cd nudge && ../.venv/bin/pip install -e . && cd ..
+```
+
+Atari ROM、ALE、OCAtari 和 HackAtari 的系统安装方法仍需补充验证。
 
 ---
 
-## 12. 信息不足 / 需确认
+## 4. Riverraid 世界模型机制
 
-以下内容仍需补充或确认：
+### 4.1 三世界模型动作仲裁
+
+当前推荐的三世界模型规划流程：
+
+1. 使用三个冻结的独立世界模型。
+2. 比较 sampled Blend 与 sampled Neural 候选动作。
+3. 候选动作相同时跳过世界模型。
+4. 候选动作不同时执行五步 world model rollout。
+5. 后续动作使用 Blend policy 的 `argmax`。
+6. 每个世界模型产生一条确定性轨迹。
+7. 对三个模型的回报计算均值和标准差。
+8. 当标准化优势大于 `tau` 时允许 Neural 覆盖 Blend。
+
+当前 Seaquest 消融结果表明：
 
 ```text
-1. GPU0 guard 脚本最终完整内容。
-2. out/61 的完整 commands 文件。
-3. out/61 TensorBoard 当前 latest step / SPS / checkpoint 状态。
-4. guard.log 是否应存在，以及为什么当前未确认有效写入。
-5. GitHub 远端仓库当前文档是否已同步。
-6. clean WM seed0/seed2 完成后是否作为后续 frozen WM 辅助训练的正式 checkpoint。
-7. TensorBoard 端口和本地访问方式。
+dist + K1 + CRN ≈ dist + K4 + CRN
+两者均明显低于 argmax + K1
 ```
+
+因此当前推荐默认配置仍是：
+
+```text
+argmax + K1
+CRN 关闭
+horizon = 5
+```
+
+`dist`、K4 和 CRN 已经实现，但目前作为消融实验保留，不作为默认生产配置。
+
+### 4.2 三世界模型关键参数
+
+```text
+--use-world-model-arbiter
+--world-model-checkpoint <WM0>
+--world-model-ensemble-checkpoints <WM0>,<WM1>,<WM2>
+--world-model-freeze
+--world-model-ensemble-tau 0.2
+--world-model-ensemble-beta 1
+--world-model-horizon 5
+--world-model-warmup-steps 0
+```
+
+推荐确定性 rollout：
+
+```text
+--world-model-rollout-action-mode argmax
+--world-model-mc-rollouts 1
+```
+
+argmax 模式下不要传：
+
+```text
+--world-model-common-random-numbers
+```
+
+随机 rollout 消融：
+
+```text
+--world-model-rollout-action-mode dist
+--world-model-mc-rollouts 1
+--world-model-common-random-numbers
+```
+
+多轨迹消融：
+
+```text
+--world-model-rollout-action-mode dist
+--world-model-mc-rollouts 4
+--world-model-common-random-numbers
+```
+
+参数限制：
+
+1. `argmax` 只允许 `K=1`。
+2. CRN 只能与 `dist` 一起使用。
+3. `mc_rollouts` 必须大于等于 1。
+
+非法组合包括：
+
+```text
+argmax + K4
+argmax + CRN
+K = 0
+```
+
+### 4.3 世界模型回报计算
+
+单条五步轨迹回报：
+
+```text
+G = 预测折扣奖励之和 + 存活概率加权的末端 Blend critic value
+```
+
+每个世界模型在 K 轨迹模式下先计算：
+
+```text
+per_model_score = K 条轨迹回报的平均
+```
+
+然后在三个世界模型之间计算：
+
+```text
+blend_mean
+blend_std
+neural_mean
+neural_std
+```
+
+最终置信度：
+
+```text
+confidence =
+(neural_mean - blend_mean) /
+max(sqrt(neural_std^2 + blend_std^2), 1e-8)
+```
+
+当：
+
+```text
+confidence > tau
+```
+
+执行 Neural 候选，否则保留 Blend 候选。
+
+注意：当前三世界模型 Neural-only 最终切换依据是 `confidence > tau`。`ensemble_beta` 主要保留在诊断或其他保守分数中，不是当前 Neural-only 最终覆盖的主阈值。
+
+---
+
+## 5. Riverraid 三世界模型评测
+
+### 5.1 评测口径
+
+Riverraid 必须使用完整游戏口径：
+
+```text
+--full-game-episodes
+```
+
+原因：Riverraid 使用 `EpisodicLifeEnv`。如果不开启完整游戏模式，掉一条命可能被错误计为一个完整 episode，导致评测分数无法与正式完整游戏分比较。
+
+### 5.2 checkpoint 加载
+
+直接加载三个世界模型 checkpoint：
+
+```text
+--wm-checkpoint-paths <WM0>,<WM1>,<WM2>
+```
+
+当提供 `--wm-checkpoint-paths` 时，评测脚本应优先使用这些 checkpoint，并清空默认 Seaquest run 路径，避免 manifest 记录错误来源。
+
+正式三模型来源：
+
+```text
+seed0 clean 20M
+seed1 clean 20M（已同步到 yingnan）
+seed2 clean 20M WM-only checkpoint
+```
+
+不应使用两个 seed0 模型代替 seed1。
+
+### 5.3 tau 扫描配置
+
+正式 tau 评测参数：
+
+```text
+policy：seed0 20M
+WM：clean seed0、seed1、seed2
+episodes：100 个完整游戏
+num_eval_envs：32
+rollout：argmax
+K：1
+CRN：关闭
+horizon：5
+beta：1
+Neural-only：开启
+tau：0、0.1、0.2、0.3
+```
+
+单组启动方式：
+
+```bash
+cd /home/yingnan/blendRL_k4_dev
+
+bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.0 000
+bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.1 010
+bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.2 020
+bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.3 030
+```
+
+注意：脚本包含固定输出目录。重复评测前必须修改为新的唯一输出目录。
+
+---
+
+## 6. 训练与恢复注意事项
+
+### 6.1 随机 rollout 恢复
+
+随机 rollout 使用独立规划 RNG：
+
+```text
+planning_seed = training_seed + planning_seed_offset
+```
+
+训练 checkpoint 旁会保存：
+
+```text
+ensemble_planning_rng_step_<step>.pt
+```
+
+恢复训练时必须同时恢复对应的规划 RNG sidecar。
+
+恢复前检查：
+
+```bash
+ls out/<实验>/checkpoints/
+ls out/<实验>/ensemble_planning_rng_step_*.pt
+```
+
+缺少 RNG sidecar 时，不应继续随机 rollout 正式实验。
+
+### 6.2 输出目录检查
+
+每次启动前检查：
+
+```bash
+test ! -e "$BLENDRL_OUT_PATH"
+```
+
+输出目录已存在时应停止，不要复用。
+
+---
+
+## 7. 常见错误
+
+### 7.1 argmax 模式启动失败
+
+错误原因：
+
+```text
+argmax rollout requires mc_rollouts=1
+```
+
+处理：
+
+```text
+--world-model-rollout-action-mode argmax
+--world-model-mc-rollouts 1
+```
+
+并关闭 CRN。
+
+### 7.2 CRN 参数报错
+
+错误原因：
+
+```text
+common random numbers require dist rollout mode
+```
+
+CRN 只能与 `dist` 配合。
+
+### 7.3 Riverraid 评测分数只有个位数或几十
+
+原因：把掉一条命当成完整游戏。
+
+处理：
+
+```text
+--full-game-episodes
+```
+
+### 7.4 checkpoint 加载失败
+
+直接 checkpoint 模式必须提供兼容的三个世界模型：
+
+```text
+--wm-checkpoint-paths WM0,WM1,WM2
+```
+
+加载器会严格检查缺失键、多余键和参数形状。
+
+### 7.5 SPS 过低
+
+依次检查：
+
+```bash
+nvidia-smi
+ps -ef | grep python
+```
+
+确认：
+
+1. 是否有多个训练共享 GPU。
+2. `mp_num_workers` 是否与正式配置一致。
+3. 是否只运行了很短的未预热测试。
+4. 是否开启了大量 trace。
+5. 是否有多个评测同时占用 CPU。
+
+### 7.6 纯 PPO 不能直接启动
+
+不要使用：
+
+```text
+train_blenderl.py --algorithm ppo
+```
+
+它仍会创建 BlendRL 模型。旧 `train_neuralppo.py` 当前也不是可复现的正式入口。必须先实现干净的纯 CNN PPO 脚本。
+
+---
+
+## 8. 当前不支持的内容
+
+当前项目不是 Web 服务。
+
+```text
+Docker：未配置
+Docker Compose：未配置
+数据库：无
+HTTP API：无
+开放端口：无固定要求
+```
+
+实际运行方式：
+
+```text
+Linux 服务器
+Python .venv
+NVIDIA CUDA
+shell 脚本
+systemd 或前台进程
+TensorBoard 可选
+```
+
+如需 Docker 化，需要额外补充：
+
+1. CUDA 基础镜像。
+2. Atari ROM 挂载。
+3. OCAtari / HackAtari 系统依赖。
+4. checkpoint 和 out 目录挂载。
+5. GPU device 配置。
+6. 共享内存和多进程限制。
+
+---
+
+## 9. 纯 PPO 公平基线状态
+
+当前项目尚无可直接复现的纯 PPO 正式入口。
+
+公平的纯 PPO 必须使用：
+
+```text
+与 BlendRL 神经分支相同的 CNN
+18 个 ALE 原始动作
+20,004,864 实际环境步
+128 个环境
+128 步 rollout
+32 个环境 worker
+4096 minibatch
+10 个 update epochs
+learning_rate = 0.00025
+gamma = 0.99
+gae_lambda = 0.95
+clip_coef = 0.1
+ent_coef = 0.01
+vf_coef = 0.5
+max_grad_norm = 0.5
+```
+
+必须移除：
+
+```text
+Logic 策略
+Blender
+World Model
+Skill package
+```
+
+正式训练前还需要实现对应的 CNN PPO 训练与 100 局完整游戏评测入口。
+
+---
+
+## 10. 已删除或归档的旧内容
+
+以下旧内容不再作为当前状态维护：
+
+1. `clean WM seed0 正在运行`。
+2. `clean WM seed2 排队等待 seed0 完成`。
+3. `GPU0 clean WM guard 当前状态`。
+4. 临时 PID、瞬时显存、瞬时 GPU 利用率。
+5. `out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709` 作为保留历史目录的描述；该目录已被删除以避免误用。
+6. “Riverraid 三世界模型仍依赖 L40”的描述；当前所需 seed1 已同步到 yingnan。
+7. “评测只能从 run 目录加载 WM”的描述；当前支持 `--wm-checkpoint-paths`。
+8. “Riverraid 一条 done 就是一整局”的评测假设；当前必须使用 `--full-game-episodes`。
+9. “dist、K4、CRN 尚未实现”的待办描述；这些功能已经实现并测试。
+10. “K4 正式训练尚未启动”的描述；Seaquest 相关 K1/K4 消融已经运行，Riverraid 当前采用 argmax + K1 作为推荐评测配置。
+
+---
+
+## 11. 未完成事项
+
+1. 等待 Riverraid 四组 tau 完成 100 局并生成最终汇总。
+2. 完成后优先比较均值、中位数和方差，而不是只看最高分。
+3. 与无世界模型的 Riverraid BlendRL 完整正式对照做同口径比较。
+4. 完成 Seaquest K1/K4 最终 20M 结果和固定 100 局评测，用于解释为何 Riverraid 默认采用 argmax + K1。
+5. 建立统一实验注册表，记录输出目录、seed、checkpoint、tau、rollout 模式和结论。
+6. 新建干净的纯 CNN PPO 训练和评测入口。
+7. 补充 ROM、CUDA、系统依赖和 TensorBoard 访问文档。
+8. 明确 `/home/yingnan/blendRL_k4_dev` 是否长期作为独立研究分支，还是后续合并回原项目。
+
+### 仍需补充的信息
+
+为了完成最终文档，还需要：
+
+1. Riverraid tau 扫描完成后的 `tau_sweep_summary.csv/json`。
+2. Riverraid 无世界模型 baseline 的完整 100 局同口径结果。
+3. Seaquest K1/K4 训练结束后的最终 checkpoint 和 100 局结果。
+4. 当前服务器 CUDA 驱动、ROM 路径和系统依赖清单。
+5. 未来纯 PPO 新入口的实际文件名和最终命令。
