@@ -1,324 +1,412 @@
-# Riverraid 世界模型项目文档（维护版）
+# 文档维护结果
 
-更新时间：2026-07-12  
-维护依据：`Riverraid_Project_Document_CN_20260709.md`、`blendrl_document_maintenance.md`、当前仓库既有维护版文档，以及已确认的实验记录。  
-维护原则：代码、配置、checkpoint、运行日志和实际评测脚本优先于旧文档；不确定内容标注“需确认”；删除已经过时的临时运行状态。
+更新时间：2026-07-13  
+维护对象：`Riverraid_Project_Document_CN_20260710_maintained(1).md`  
+维护原则：
+
+1. 当前项目代码、实际配置、checkpoint、运行日志和评测脚本优先于旧文档。
+2. 官方仓库代码优先于论文描述；论文描述优先于二手总结。
+3. 未直接检查当前项目代码或运行结果的内容标注“需确认”。
+4. 临时 PID、瞬时 GPU 状态和未完成任务进度不作为长期文档内容。
+5. 原始游戏分、训练奖励、简化环境回报和完整游戏回报必须分开记录。
 
 ---
 
-## 1. 项目定位
+## 1. 本次变更摘要
 
-本项目是 `BlendRL` 在 Atari `Riverraid` 环境上的世界模型实验分支，核心目标是验证：
+本次维护新增和修正了以下内容：
 
-1. Riverraid baseline / BlendRL policy 的训练与评测。
-2. Riverraid clean World Model checkpoint 的复用。
-3. 三个冻结世界模型对候选动作进行 rollout 评分。
-4. 在 sampled Blend 与 sampled Neural 候选动作冲突时，用三世界模型的预测优势决定是否允许 Neural 覆盖 Blend。
+1. 保留 Riverraid 三世界模型动作仲裁、checkpoint 加载、完整游戏评测和 tau 扫描的已确认实现。
+2. 删除“当前正在运行”“正在排队”等容易过时的瞬时状态，改为可重复执行的状态检查命令。
+3. 增加 BlendRL 复现风险说明：
+   - 公开 `requirements.txt` 未锁定 Gymnasium、Stable-Baselines3、OCAtari 等关键版本。
+   - BlendRL 的 HackAtari 依赖指向未固定 commit 的 GitHub 默认分支。
+   - 公开仓库默认训练参数与 BlendRL 原论文参数不一致。
+   - `train_blenderl.py --algorithm ppo` 仍创建 BlendRL，不是纯 PPO。
+   - 旧 `train_neuralppo.py` 不能直接视为公平、独立的纯 PPO 基线。
+4. 增加 GRAIL 与 BlendRL 代码对比：
+   - GRAIL 的 `train_blenderl.py` 与 BlendRL 当前公开版本核心代码相同。
+   - GRAIL 新增可学习 valuation、Stage 1/Stage 2 模块加载与冻结机制。
+   - GRAIL 修正 Seaquest 潜水员对象切片和水面坐标。
+   - GRAIL 论文完整环境设置与公开脚本默认值、Seaquest 奖励代码之间存在不一致。
+5. 增加 GRAIL、BlendRL 原论文和 H²RL 分数口径说明，避免把简化环境与完整环境直接比较。
+6. 增加环境冻结、Git commit、ROM、checkpoint 哈希和实验注册表要求。
+7. 增加后续开发优先级：先建立可信 PPO/BlendRL 基线，再评估世界模型仲裁增益。
 
-当前 Riverraid 主线采用与 L40 机器一致的奖励版本：
+---
+
+## 2. 需要更新的文档
+
+| 文档 | 状态 | 需要更新的内容 |
+| --- | --- | --- |
+| `Riverraid_Project_Document_CN_20260710_maintained(1).md` | 本次已更新 | 世界模型主线、复现问题、GRAIL/H²RL、依赖冻结、当前状态 |
+| `README.md` | 需要更新 | 标准启动命令、输出目录、完整游戏评测、环境冻结要求 |
+| `docs/architecture.md` | 建议新增或更新 | BlendRL、Neural、三世界模型仲裁的数据流和切换条件 |
+| `docs/evaluation.md` | 建议新增 | 原始分数、训练奖励、完整游戏 episode、100 局评测口径 |
+| `docs/reproducibility.md` | 建议新增 | Python/CUDA/Gymnasium/ALE/OCAtari/HackAtari 版本及 commit |
+| `docs/troubleshooting.md` | 建议新增或更新 | `EpisodicLifeEnv`、checkpoint 不兼容、依赖漂移、低 SPS |
+| `CHANGELOG.md` | 建议更新 | 三世界模型、CRN、K-rollout、完整游戏评测、直接 WM checkpoint 加载 |
+| `requirements-lock.txt` 或 `environment.yml` | 必须新增 | 固定实际可运行环境，不再只依赖未锁版本的 `requirements.txt` |
+| `experiments/registry.csv` | 建议新增 | 记录 seed、checkpoint、Git SHA、奖励、tau、评测结果和状态 |
+
+当前未确认上述建议文档是否已经存在。若已有，应更新原文件，不要重复新建同类文档。
+
+---
+
+## 3. 过时内容
+
+### 3.1 临时运行状态
+
+旧文档中的以下内容会快速失效，不应继续作为“当前状态”：
+
+- tau 四组评测正在运行。
+- 某个 seed 正在训练或排队。
+- 临时 PID、显存占用、GPU 利用率。
+- 某个 worker 当前完成多少局。
+- 当前仍依赖 L40 读取 checkpoint。
+
+处理方式：
+
+```bash
+nvidia-smi
+ps -ef | grep -E "python|train|eval"
+tail -f out/<实验目录>/launch_logs/train.log
+```
+
+文档只记录启动方法、输出位置和最终完成结果。
+
+### 3.2 阶段性 tau 结果被误当成最终结果
+
+旧文档中的 tau 表只来自未完成评测：
+
+| tau | 当时已完成局数 | 当时平均原始游戏分 |
+| ---: | ---: | ---: |
+| 0.0 | 36 | 2644.7 |
+| 0.1 | 45 | 2499.8 |
+| 0.2 | 58 | 2424.5 |
+| 0.3 | 69 | 2332.3 |
+| baseline | 100 | 2225.9 |
+
+这些数据只能保留为“2026-07-12 阶段记录”，不能进入最终论文结果。四组是否已经完成 100 局：**需确认**。
+
+### 3.3 直接使用 `requirements.txt` 可以复现作者环境
+
+该说法不准确。
+
+BlendRL 当前公开依赖主要写成：
+
+```text
+stable-baselines3
+ocatari
+hackatari @ git+https://github.com/k4ntz/HackAtari.git
+gymnasium[atari, accept-rom-license]
+torch==2.4.0
+```
+
+只有 `torch==2.4.0` 和少数包严格固定。其他包会根据安装时间、Python 版本和依赖解析结果变化；HackAtari 还会获取安装时默认分支代码。
+
+GRAIL 的 `requirements.txt` 同样未锁定 Stable-Baselines3、OCAtari 和 Gymnasium。GRAIL Dockerfile使用仓库内 `third_party/hackatari`，但本地安装说明没有完整给出与论文实验一致的锁定环境。
+
+### 3.4 `train_blenderl.py --algorithm ppo` 是纯 PPO
+
+该说法不准确。当前审计结论是：
+
+```text
+train_blenderl.py --algorithm ppo
+```
+
+仍然创建 `BlenderActorCritic`，不能作为纯 CNN PPO。
+
+旧 `train_neuralppo.py` 虽然只训练神经 actor-critic，但仍使用 BlendRL 环境构造路径，默认参数也与论文完整实验不完全一致。
+
+### 3.5 GRAIL 表 1 的 983 与 BlendRL 原论文 4204 是同一实验
+
+该说法不准确。
+
+- GRAIL Table 1 的 Seaquest `BlendRL+Expert = 983±93` 属于 Stage 1 简化环境。
+- GRAIL Figure 11 的 Seaquest hard-coded BlendRL `4706` 属于 Stage 2 完整环境。
+- BlendRL 原论文 Seaquest BlendRL `4204±10` 属于原论文完整实验。
+
+只有后两项在任务含义上较接近，但训练环境、代码版本和评测细节仍未完全对齐。
+
+---
+
+## 4. 缺失内容
+
+### 4.1 当前项目代码与配置文件
+
+本次只收到维护文档，没有收到当前项目源码和最终运行配置。以下结论仍需用当前仓库复核：
+
+- 世界模型仲裁最终公式及 `ensemble_beta` 的实际用途。
+- `--wm-checkpoint-paths` 的严格加载逻辑。
+- `--full-game-episodes` 对终止、截断和生命损失的处理。
+- tau 启动脚本中的实际环境数、worker 数和输出目录。
+- 当前 Riverraid 奖励是否始终为 `sign(original_reward)`。
+- 当前正式 baseline checkpoint 的训练参数和 Git SHA。
+
+需要补充的文件：
+
+```text
+train_blenderl.py
+实际评测入口
+世界模型/ensemble/arbiter 实现文件
+Riverraid env.py 与 env_vectorized.py
+Riverraid reward 文件
+scripts/run_riverraid_3wm_tau_parallel_one.sh
+正式 run 的 config.yaml / manifest.json
+pip freeze
+Git commit SHA
+最终 tau 汇总 CSV/JSON
+```
+
+### 4.2 可复现环境快照
+
+当前缺少：
+
+- Python 精确版本。
+- CUDA driver、CUDA runtime、cuDNN 版本。
+- `gymnasium`、`stable-baselines3`、`ale-py`、`ocatari`、`hackatari` 精确版本。
+- OCAtari/HackAtari Git commit。
+- Atari ROM 名称、来源和哈希。
+- 当前项目 Git commit。
+- checkpoint SHA256。
+
+### 4.3 可信纯 PPO 基线
+
+当前没有同时满足以下条件的正式 PPO 入口：
+
+- 与 BlendRL 神经分支相同 CNN。
+- 相同像素预处理和动作空间。
+- 相同奖励和 episode 口径。
+- 相同总环境步、rollout、minibatch、update epochs。
+- 独立于 Logic、Blender、World Model。
+- 100 局完整游戏固定评测。
+
+### 4.4 GRAIL 完整实验配置
+
+GRAIL 论文写明 Stage 2 使用：
+
+```text
+60M steps
+32 parallel environments
+128 rollout steps
+10 PPO epochs
+learning rate 2.5e-4 linear decay
+gamma 0.99
+GAE lambda 0.95
+clip 0.1
+action entropy 0.01
+blend entropy 0.01
+value coefficient 0.5
+gradient clipping 0.5
+```
+
+但公开仓库没有提供 Figure 11 每个 seed 对应的完整命令、配置文件、checkpoint 和依赖锁文件。
+
+### 4.5 H²RL 的 BlendRL 实现
+
+截至 2026-07-13，未找到 H²RL 论文明确链接的官方公开代码仓库。无法确认其 BlendRL baseline 使用：
+
+- 哪个 BlendRL commit。
+- 原始或 GRAIL 修正版 Seaquest valuation。
+- NSFR 或 NEUMANN。
+- 哪个依赖环境。
+- 哪个奖励函数。
+- 单命 episode 或完整游戏。
+- 是否修改 CNN、动作空间或训练入口。
+
+因此 H²RL 的低分只能作为复现冲突证据，不能直接认定为官方 BlendRL 的真实性能。
+
+---
+
+## 5. 矛盾内容
+
+### 5.1 三篇论文中的 Seaquest 分数不可直接混用
+
+| 来源 | 环境/阶段 | PPO | BlendRL | 结论 |
+| --- | --- | ---: | ---: | --- |
+| BlendRL 原论文 | 原论文完整实验 | 837.3±46.7 | 4204±10 | 原作者报告 |
+| GRAIL Table 1 | Stage 1 简化环境 | 453±93 | Expert 983±93 | 不可与完整环境直接比较 |
+| GRAIL Figure 11 | Stage 2 完整环境 | 2216 | hard-coded 4706 | 与原论文较接近 |
+| H²RL Table 13 | H²RL 统一设置 | 3247±881 | 117±62 | 实现未公开，原因需确认 |
+
+当前项目中应只比较同一代码、同一环境、同一奖励和同一评测脚本下重新训练的结果。
+
+### 5.2 BlendRL 原论文与当前公开脚本默认值
+
+BlendRL 原论文 Table 4：
+
+```text
+num_envs = 512
+num_steps = 128
+total_timesteps = 20,000,000
+learning_rate = 2.5e-4
+gamma = 0.99
+```
+
+当前公开 `train_blenderl.py` 默认值：
+
+```text
+num_envs = 20
+num_steps = 128
+total_timesteps = 60,000,000
+update_epochs = 10
+```
+
+公开脚本可以通过命令行覆盖部分参数，但默认运行不等于原论文复现。
+
+### 5.3 GRAIL 论文 Stage 2 与公开代码
+
+| 项目 | GRAIL 论文 | 公开代码/README | 状态 |
+| --- | --- | --- | --- |
+| 并行环境 | 32 | 脚本默认 20，README 示例 5 | 可覆盖，但默认不一致 |
+| PPO epochs | 10 | `train_blenderl.py` 10 | 一致 |
+| PPO baseline epochs | 论文 Stage 2 写 10 | `train_neuralppo.py` 默认 4 | 不一致 |
+| Stage 2 valuation | 加载 Stage 1 valuation 并冻结 | README 调用旧 `train_blenderl.py` | README 路径不足 |
+| Neural/Blender 初始化 | Stage 2 从头随机初始化 | `train_valuation.py` 配置路径支持重置 | 代码具备能力，缺正式配置 |
+| Seaquest 奖励 | 主要目标 20，其他奖励 1 | 默认 reward 为救援 1、普通事件 0.5 | 明确不一致或缺配置 |
+| step size | 论文写 1 | wrapper 使用 `MaxAndSkipEnv(skip=4)` | 含义需确认 |
+| 完整运行命令 | 应包含完整 Stage 2 配置 | README 只给简化示例 | 缺失 |
+
+### 5.4 GRAIL 与 BlendRL Seaquest 代码差异
+
+GRAIL 并非完全原样使用旧 Seaquest 环境代码。
+
+已确认差异：
+
+```python
+# BlendRL 当前公开 valuation
+divers_vs = objs[:, -6:]
+
+# GRAIL
+divers_vs = objs[:, -7:-1]
+```
+
+```python
+# BlendRL 当前公开奖励判断
+player.y == 45
+
+# GRAIL
+player.y == 46
+```
+
+GRAIL 还注明 Seaquest 当前实际只有 42 个对象，但为了兼容旧 checkpoint 保持 `n_objects = 43`。
+
+这说明 OCAtari/HackAtari 对象布局或坐标变化可能直接破坏旧符号谓词。当前项目若复现 Seaquest，必须记录依赖版本并为对象索引做单元测试。
+
+### 5.5 依赖文件与复现目标
+
+当前 `requirements.txt` 只能表达“可尝试安装”，不能表达“论文使用环境”。
+
+需要同时维护：
+
+```text
+requirements.in        # 人工维护的直接依赖
+requirements-lock.txt  # 完整固定版本
+git-dependencies.txt   # OCAtari/HackAtari 等 commit
+system-info.txt        # Python/CUDA/driver
+rom-hashes.txt         # ROM 哈希
+```
+
+---
+
+## 6. 建议修改内容
+
+以下内容可直接作为新版项目主文档。
+
+---
+
+### Riverraid 世界模型辅助 BlendRL 项目文档
+
+更新时间：2026-07-13
+
+#### 1. 项目定位
+
+本项目在 BlendRL 的 Atari Riverraid 分支上增加世界模型辅助动作仲裁。
+
+核心流程：
+
+1. BlendRL 产生 sampled Blend 候选动作。
+2. 神经策略产生 sampled Neural 候选动作。
+3. 两个动作相同则直接执行，不调用世界模型。
+4. 两个动作不同时，三个冻结世界模型分别进行短期 rollout。
+5. 比较两个候选动作的预测回报。
+6. 只有 Neural 候选的标准化优势超过 `tau` 时，才允许 Neural 覆盖 Blend。
+
+当前 Riverraid 正式奖励口径：
 
 ```python
 return float(np.sign(self.org_reward))
 ```
 
-因此当前文档不再沿用旧的 shaped reward 结果，也不再把旧的 reward 混杂实验作为正式结论来源。
+旧 shaped reward、原始游戏分和训练 reward 不得混在同一结果表中。
 
-当前主线已经从“补训练 Riverraid clean World Model seed0 / seed2”更新为：
+#### 2. 已确认实现
 
-```text
-Riverraid 三世界模型评测与 tau 扫描
-```
-
-旧文档中关于 “clean WM seed0 正在运行、seed2 排队、out/51 保留为历史辅助训练目录” 的状态已经过时，本版已删除。
-
----
-
-## 2. 当前状态
-
-### 2.1 已完成
-
-1. 已从原项目创建独立开发副本：
-
-   ```text
-   原项目真实目录：/home/yingnan/??/czx/blendRL
-   原项目快捷链接：/home/yingnan/blendRL_project_k4 -> /home/yingnan/??/czx/blendRL
-   当前开发目录：/home/yingnan/blendRL_k4_dev
-   ```
-
-2. 当前开发目录拥有独立源代码和 Git 仓库，但共享原项目的环境与输出目录：
-
-   ```text
-   /home/yingnan/blendRL_k4_dev/.venv -> 原项目/.venv
-   /home/yingnan/blendRL_k4_dev/out   -> 原项目/out
-   ```
-
-3. 三世界模型 rollout 已实现并测试：
-
-   ```text
-   rollout_action_mode = argmax | dist
-   mc_rollouts = K
-   common_random_numbers = CRN
-   planning_seed_offset = 独立规划随机种子
-   ```
-
-4. 已实现并测试：
-
-   ```text
-   dist + K4 + CRN
-   dist + K1 + CRN
-   独立规划 RNG 保存和恢复
-   K 轨迹批量展开
-   模型间标准差与轨迹内标准差分离
-   训练和评测共用相同 rollout 逻辑
-   ```
-
-5. Riverraid 三世界模型已确认使用三份独立 clean checkpoint：
-
-   ```text
-   seed0：yingnan 完整训练结果
-   seed1：已从 L40 同步到 yingnan
-   seed2：已导入 yingnan 的 WM-only checkpoint
-   ```
-
-   后续 Riverraid 运行不需要再访问 L40。
-
-6. Riverraid 评测已新增：
-
-   ```text
-   --wm-checkpoint-paths
-   ```
-
-   支持直接加载完整 checkpoint 或 WM-only checkpoint。
-
-7. Riverraid 评测已新增：
-
-   ```text
-   --full-game-episodes
-   ```
-
-   用于修复 `EpisodicLifeEnv` 将“掉一条命”误算为完整游戏的问题。
-
-8. 已删除容易造成误解的不完整实验目录：
-
-   ```text
-   out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709
-   ```
-
-9. 已审计纯 PPO 入口：
-
-   ```text
-   train_blenderl.py --algorithm ppo
-   ```
-
-   该入口实际仍会创建 BlendRL，不是真正的纯 PPO。旧 `train_neuralppo.py` 也不能直接作为正式公平基线。
-
-### 2.2 当前运行中
-
-截至本次维护依据中的检查，当前 Riverraid 主要运行任务为：
+当前维护文档确认已经实现：
 
 ```text
-Riverraid tau = 0.0 / 0.1 / 0.2 / 0.3 四组 100 局完整游戏评测
-GPU = 0
-每组 32 个环境
-每组 8 个 worker
-总 worker 数控制为 32
+三世界模型 ensemble
+rollout_action_mode = argmax | dist
+mc_rollouts = K
+common_random_numbers
+独立 planning RNG
+planning RNG checkpoint sidecar
+K 轨迹批量展开
+模型间标准差与轨迹内标准差分离
+训练与评测共用 rollout 逻辑
+--wm-checkpoint-paths
+--full-game-episodes
 ```
 
-注意：这类运行状态会继续变化，文档中不再记录临时 PID、瞬时显存和未完成任务的“当前步数”。需要实时确认时使用：
-
-```bash
-nvidia-smi
-ps -ef | grep python
-tail -f out/<实验>/launch_logs/train.log
-```
-
-### 2.3 阶段性 Riverraid tau 结果
-
-以下结果来自未完成的动态评测，只能作为阶段观察，不能写入最终论文表格：
-
-| tau | 已完成局数 | 平均原始游戏分 | 中位数 | Neural 动作占比 |
-| ---: | ---: | ---: | ---: | ---: |
-| 0.0 | 36 | 2644.7 | 2675 | 34.7% |
-| 0.1 | 45 | 2499.8 | 2540 | 19.1% |
-| 0.2 | 58 | 2424.5 | 2360 | 11.3% |
-| 0.3 | 69 | 2332.3 | 2340 | 7.5% |
-| baseline | 100 | 2225.9 | 2165 | 0% |
-
-阶段性观察：
+正式 Riverraid 三个世界模型来源：
 
 ```text
-低 tau 暂时表现更好，tau=0 当前阶段性均值最高。
-最终结论必须等待每组 100 局完整游戏完成。
+seed0：yingnan 完整训练 checkpoint
+seed1：从 L40 同步到 yingnan
+seed2：yingnan WM-only checkpoint
 ```
 
----
+具体 checkpoint 路径和 SHA256：**需确认并写入实验注册表**。
 
-## 3. 项目目录与环境风险
+#### 3. 推荐世界模型配置
 
-### 3.1 服务器目录
+当前推荐的确定性配置：
 
 ```text
-原项目：/home/yingnan/??/czx/blendRL
-原项目快捷链接：/home/yingnan/blendRL_project_k4
-当前开发目录：/home/yingnan/blendRL_k4_dev
-```
-
-开发目录复用原项目环境和输出：
-
-```text
-.venv -> 原项目/.venv
-out   -> 原项目/out
-```
-
-因此需要注意：
-
-1. 不要在开发目录随意升级或删除 Python 依赖，因为会影响原项目环境。
-2. 不要删除不属于本次实验的 `out` 目录，因为会删除原项目真实结果。
-3. 两个目录不能使用相同输出名并发写入。
-4. 每次训练必须使用唯一的 `BLENDRL_OUT_PATH`。
-5. 启动前必须检查输出目录不存在。
-
-### 3.2 环境变量
-
-| 变量 | 作用 |
-| --- | --- |
-| `BLENDRL_OUT_PATH` | 指定本次实验输出目录 |
-| `CUDA_VISIBLE_DEVICES` | 指定物理 GPU |
-| `PYTHONUNBUFFERED=1` | 立即刷新训练日志 |
-| `OMP_NUM_THREADS` | 控制 CPU 线程，评测并行时建议显式设置 |
-| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | 减少 CUDA 内存碎片，可选 |
-| `PYTHONPATH=.` | 从项目根目录运行脚本时保证本地模块可导入 |
-
-当前没有 Docker、数据库、HTTP API 或 Web 服务配置。
-
-### 3.3 环境使用
-
-现有服务器环境：
-
-```bash
-cd /home/yingnan/blendRL_k4_dev
-source .venv/bin/activate
-```
-
-开发目录的 `.venv` 是原项目环境的符号链接。除非明确重建环境，否则不要执行依赖升级。
-
-重建环境时可参考：
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-cd nsfr && ../.venv/bin/pip install -e . && cd ..
-cd nudge && ../.venv/bin/pip install -e . && cd ..
-```
-
-Atari ROM、ALE、OCAtari 和 HackAtari 的系统安装方法仍需补充验证。
-
----
-
-## 4. Riverraid 世界模型机制
-
-### 4.1 三世界模型动作仲裁
-
-当前推荐的三世界模型规划流程：
-
-1. 使用三个冻结的独立世界模型。
-2. 比较 sampled Blend 与 sampled Neural 候选动作。
-3. 候选动作相同时跳过世界模型。
-4. 候选动作不同时执行五步 world model rollout。
-5. 后续动作使用 Blend policy 的 `argmax`。
-6. 每个世界模型产生一条确定性轨迹。
-7. 对三个模型的回报计算均值和标准差。
-8. 当标准化优势大于 `tau` 时允许 Neural 覆盖 Blend。
-
-当前 Seaquest 消融结果表明：
-
-```text
-dist + K1 + CRN ≈ dist + K4 + CRN
-两者均明显低于 argmax + K1
-```
-
-因此当前推荐默认配置仍是：
-
-```text
-argmax + K1
-CRN 关闭
+rollout_action_mode = argmax
+mc_rollouts = 1
+common_random_numbers = false
 horizon = 5
+world_model_freeze = true
 ```
 
-`dist`、K4 和 CRN 已经实现，但目前作为消融实验保留，不作为默认生产配置。
+原因：已有 Seaquest 消融记录显示 `dist + K1/K4 + CRN` 低于 `argmax + K1`。该结论是否已使用最终 20M checkpoint 和固定 100 局评测：**需确认**。
 
-### 4.2 三世界模型关键参数
+参数约束：
 
 ```text
---use-world-model-arbiter
---world-model-checkpoint <WM0>
---world-model-ensemble-checkpoints <WM0>,<WM1>,<WM2>
---world-model-freeze
---world-model-ensemble-tau 0.2
---world-model-ensemble-beta 1
---world-model-horizon 5
---world-model-warmup-steps 0
+argmax 只允许 K=1
+CRN 只允许 dist
+mc_rollouts >= 1
 ```
 
-推荐确定性 rollout：
+#### 4. 仲裁分数
+
+当前维护文档记录的回报形式：
 
 ```text
---world-model-rollout-action-mode argmax
---world-model-mc-rollouts 1
+G = 折扣预测奖励之和
+  + 存活概率加权的末端 Blend critic value
 ```
 
-argmax 模式下不要传：
+K 轨迹模式：
 
 ```text
---world-model-common-random-numbers
+per_model_score = K 条轨迹回报均值
 ```
 
-随机 rollout 消融：
-
-```text
---world-model-rollout-action-mode dist
---world-model-mc-rollouts 1
---world-model-common-random-numbers
-```
-
-多轨迹消融：
-
-```text
---world-model-rollout-action-mode dist
---world-model-mc-rollouts 4
---world-model-common-random-numbers
-```
-
-参数限制：
-
-1. `argmax` 只允许 `K=1`。
-2. CRN 只能与 `dist` 一起使用。
-3. `mc_rollouts` 必须大于等于 1。
-
-非法组合包括：
-
-```text
-argmax + K4
-argmax + CRN
-K = 0
-```
-
-### 4.3 世界模型回报计算
-
-单条五步轨迹回报：
-
-```text
-G = 预测折扣奖励之和 + 存活概率加权的末端 Blend critic value
-```
-
-每个世界模型在 K 轨迹模式下先计算：
-
-```text
-per_model_score = K 条轨迹回报的平均
-```
-
-然后在三个世界模型之间计算：
+三个模型之间计算：
 
 ```text
 blend_mean
@@ -327,7 +415,7 @@ neural_mean
 neural_std
 ```
 
-最终置信度：
+标准化置信度：
 
 ```text
 confidence =
@@ -335,69 +423,45 @@ confidence =
 max(sqrt(neural_std^2 + blend_std^2), 1e-8)
 ```
 
-当：
+最终动作：
 
 ```text
-confidence > tau
+confidence > tau  -> Neural
+otherwise         -> Blend
 ```
 
-执行 Neural 候选，否则保留 Blend 候选。
+该公式及 `ensemble_beta` 是否仍与当前代码完全一致：**需确认**。
 
-注意：当前三世界模型 Neural-only 最终切换依据是 `confidence > tau`。`ensemble_beta` 主要保留在诊断或其他保守分数中，不是当前 Neural-only 最终覆盖的主阈值。
+#### 5. 评测口径
 
----
-
-## 5. Riverraid 三世界模型评测
-
-### 5.1 评测口径
-
-Riverraid 必须使用完整游戏口径：
+Riverraid 正式评测必须使用：
 
 ```text
 --full-game-episodes
 ```
 
-原因：Riverraid 使用 `EpisodicLifeEnv`。如果不开启完整游戏模式，掉一条命可能被错误计为一个完整 episode，导致评测分数无法与正式完整游戏分比较。
+原因：训练 wrapper 含 `EpisodicLifeEnv`。生命损失可能生成训练 episode 边界，但正式原始游戏分应累计到真实游戏结束。
 
-### 5.2 checkpoint 加载
-
-直接加载三个世界模型 checkpoint：
+正式结果至少记录：
 
 ```text
---wm-checkpoint-paths <WM0>,<WM1>,<WM2>
+平均原始游戏分
+标准差
+中位数
+四分位数
+最小值/最大值
+完整游戏局数
+Neural 覆盖比例
+候选动作冲突比例
+世界模型调用比例
+每个 tau 的 checkpoint 和 Git SHA
 ```
 
-当提供 `--wm-checkpoint-paths` 时，评测脚本应优先使用这些 checkpoint，并清空默认 Seaquest run 路径，避免 manifest 记录错误来源。
+不得只比较最高分。
 
-正式三模型来源：
+#### 6. tau 扫描
 
-```text
-seed0 clean 20M
-seed1 clean 20M（已同步到 yingnan）
-seed2 clean 20M WM-only checkpoint
-```
-
-不应使用两个 seed0 模型代替 seed1。
-
-### 5.3 tau 扫描配置
-
-正式 tau 评测参数：
-
-```text
-policy：seed0 20M
-WM：clean seed0、seed1、seed2
-episodes：100 个完整游戏
-num_eval_envs：32
-rollout：argmax
-K：1
-CRN：关闭
-horizon：5
-beta：1
-Neural-only：开启
-tau：0、0.1、0.2、0.3
-```
-
-单组启动方式：
+已有启动脚本记录：
 
 ```bash
 cd /home/yingnan/blendRL_k4_dev
@@ -408,176 +472,173 @@ bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.2 020
 bash scripts/run_riverraid_3wm_tau_parallel_one.sh 0.3 030
 ```
 
-注意：脚本包含固定输出目录。重复评测前必须修改为新的唯一输出目录。
-
----
-
-## 6. 训练与恢复注意事项
-
-### 6.1 随机 rollout 恢复
-
-随机 rollout 使用独立规划 RNG：
+旧文档记录的目标配置：
 
 ```text
-planning_seed = training_seed + planning_seed_offset
+policy：Riverraid seed0 20M
+WM：clean seed0、seed1、seed2
+episodes：100 个完整游戏
+num_eval_envs：32
+rollout：argmax
+K：1
+CRN：关闭
+horizon：5
+beta：1
+tau：0、0.1、0.2、0.3
 ```
 
-训练 checkpoint 旁会保存：
+脚本当前实际参数和四组最终完成状态：**需确认**。
+
+#### 7. 目录与输出安全
+
+当前开发目录记录：
 
 ```text
-ensemble_planning_rng_step_<step>.pt
+/home/yingnan/blendRL_k4_dev
 ```
 
-恢复训练时必须同时恢复对应的规划 RNG sidecar。
+共享资源记录：
 
-恢复前检查：
+```text
+.venv -> 原项目 .venv
+out   -> 原项目 out
+```
+
+风险：
+
+1. 升级共享 `.venv` 会影响原项目。
+2. 删除开发目录下的共享 `out` 会删除原始结果。
+3. 并发实验不能使用相同输出目录。
+4. 每个 run 必须设置唯一 `BLENDRL_OUT_PATH`。
+5. 启动前检查目标目录不存在。
+
+推荐：
 
 ```bash
-ls out/<实验>/checkpoints/
-ls out/<实验>/ensemble_planning_rng_step_*.pt
+test ! -e "$BLENDRL_OUT_PATH" || {
+  echo "Output path already exists: $BLENDRL_OUT_PATH"
+  exit 1
+}
 ```
 
-缺少 RNG sidecar 时，不应继续随机 rollout 正式实验。
+#### 8. 环境快照
 
-### 6.2 输出目录检查
-
-每次启动前检查：
+在任何升级、重装或正式训练前执行：
 
 ```bash
-test ! -e "$BLENDRL_OUT_PATH"
+cd /home/yingnan/blendRL_k4_dev
+source .venv/bin/activate
+
+mkdir -p reproducibility
+
+python --version > reproducibility/python-version.txt
+python -m pip freeze > reproducibility/pip-freeze.txt
+nvidia-smi > reproducibility/nvidia-smi.txt
+
+git rev-parse HEAD > reproducibility/project-git-sha.txt
+git status --short > reproducibility/project-git-status.txt
 ```
 
-输出目录已存在时应停止，不要复用。
-
----
-
-## 7. 常见错误
-
-### 7.1 argmax 模式启动失败
-
-错误原因：
-
-```text
-argmax rollout requires mc_rollouts=1
-```
-
-处理：
-
-```text
---world-model-rollout-action-mode argmax
---world-model-mc-rollouts 1
-```
-
-并关闭 CRN。
-
-### 7.2 CRN 参数报错
-
-错误原因：
-
-```text
-common random numbers require dist rollout mode
-```
-
-CRN 只能与 `dist` 配合。
-
-### 7.3 Riverraid 评测分数只有个位数或几十
-
-原因：把掉一条命当成完整游戏。
-
-处理：
-
-```text
---full-game-episodes
-```
-
-### 7.4 checkpoint 加载失败
-
-直接 checkpoint 模式必须提供兼容的三个世界模型：
-
-```text
---wm-checkpoint-paths WM0,WM1,WM2
-```
-
-加载器会严格检查缺失键、多余键和参数形状。
-
-### 7.5 SPS 过低
-
-依次检查：
+记录关键包：
 
 ```bash
-nvidia-smi
-ps -ef | grep python
+python - <<'PY' > reproducibility/key-packages.txt
+from importlib.metadata import version, PackageNotFoundError
+
+packages = [
+    "torch",
+    "numpy",
+    "gymnasium",
+    "stable-baselines3",
+    "ale-py",
+    "ocatari",
+    "hackatari",
+]
+
+for name in packages:
+    try:
+        print(f"{name}=={version(name)}")
+    except PackageNotFoundError:
+        print(f"{name}=NOT_INSTALLED")
+PY
 ```
 
-确认：
+Git 依赖若来自源码安装，还要记录：
 
-1. 是否有多个训练共享 GPU。
-2. `mp_num_workers` 是否与正式配置一致。
-3. 是否只运行了很短的未预热测试。
-4. 是否开启了大量 trace。
-5. 是否有多个评测同时占用 CPU。
+```bash
+git -C <OCATARI_DIR> rev-parse HEAD
+git -C <HACKATARI_DIR> rev-parse HEAD
+```
 
-### 7.6 纯 PPO 不能直接启动
+checkpoint 记录：
 
-不要使用：
+```bash
+sha256sum <POLICY_CHECKPOINT> <WM0> <WM1> <WM2>
+```
+
+#### 9. BlendRL 复现注意事项
+
+BlendRL 原论文报告的 Seaquest 分数：
+
+```text
+PPO：837.3 ± 46.7
+BlendRL：4204 ± 10
+```
+
+原论文训练参数包括：
+
+```text
+num_envs = 512
+num_steps = 128
+total_timesteps = 20,000,000
+learning_rate = 2.5e-4
+gamma = 0.99
+```
+
+当前公开 `train_blenderl.py` 默认值并非上述配置：
+
+```text
+num_envs = 20
+total_timesteps = 60,000,000
+```
+
+因此直接运行公开默认命令不能称为原论文复现。
+
+当前项目已发现：
 
 ```text
 train_blenderl.py --algorithm ppo
 ```
 
-它仍会创建 BlendRL 模型。旧 `train_neuralppo.py` 当前也不是可复现的正式入口。必须先实现干净的纯 CNN PPO 脚本。
+仍然构建 BlendRL。不得把它标记为纯 PPO。
 
----
+#### 10. 纯 PPO 基线要求
 
-## 8. 当前不支持的内容
-
-当前项目不是 Web 服务。
+正式纯 PPO 应满足：
 
 ```text
-Docker：未配置
-Docker Compose：未配置
-数据库：无
-HTTP API：无
-开放端口：无固定要求
-```
-
-实际运行方式：
-
-```text
-Linux 服务器
-Python .venv
-NVIDIA CUDA
-shell 脚本
-systemd 或前台进程
-TensorBoard 可选
-```
-
-如需 Docker 化，需要额外补充：
-
-1. CUDA 基础镜像。
-2. Atari ROM 挂载。
-3. OCAtari / HackAtari 系统依赖。
-4. checkpoint 和 out 目录挂载。
-5. GPU device 配置。
-6. 共享内存和多进程限制。
-
----
-
-## 9. 纯 PPO 公平基线状态
-
-当前项目尚无可直接复现的纯 PPO 正式入口。
-
-公平的纯 PPO 必须使用：
-
-```text
-与 BlendRL 神经分支相同的 CNN
+与 BlendRL 神经分支相同 CNN
 18 个 ALE 原始动作
+相同像素预处理
+相同奖励函数
+相同完整游戏评测
+相同总实际环境步
+相同 rollout 和 PPO 更新强度
+无 Logic
+无 Blender
+无 World Model
+无 Skill package
+```
+
+当前项目计划参数记录为：
+
+```text
 20,004,864 实际环境步
 128 个环境
 128 步 rollout
 32 个环境 worker
 4096 minibatch
-10 个 update epochs
+10 update epochs
 learning_rate = 0.00025
 gamma = 0.99
 gae_lambda = 0.95
@@ -587,53 +648,298 @@ vf_coef = 0.5
 max_grad_norm = 0.5
 ```
 
-必须移除：
+这些参数是否已经进入可运行的新 PPO 脚本：**需确认**。
+
+#### 11. GRAIL 对本项目的影响
+
+GRAIL 是 BlendRL 的后续工作，主要新增：
 
 ```text
-Logic 策略
-Blender
-World Model
-Skill package
+LLM 生成概念 proxy
+可学习 valuation network
+concept alignment loss
+Stage 1 概念学习
+Stage 2 冻结 valuation 后训练神经策略和 Blender
 ```
 
-正式训练前还需要实现对应的 CNN PPO 训练与 100 局完整游戏评测入口。
+可借鉴内容：
+
+1. 用可学习谓词替代完全手写阈值。
+2. 使用弱监督 proxy 解决稀疏奖励下的概念学习。
+3. 将概念学习与完整策略训练分阶段处理。
+4. 在本项目中可由世界模型仲裁器检查符号或神经候选动作。
+
+不应直接继承的内容：
+
+1. GRAIL 的公开完整实验命令和配置不完整。
+2. 依赖仍未严格锁定。
+3. Seaquest 论文奖励与默认代码不一致。
+4. PPO baseline 默认 epochs 与论文描述不一致。
+5. README 的 Stage 2 命令不能完整表达 valuation 加载、冻结和模块重置。
+
+#### 12. GRAIL 与 BlendRL 的关键代码差异
+
+核心 `train_blenderl.py` 当前基本相同，GRAIL 的主要变化在：
+
+```text
+valuation/models
+train_valuation.py
+ValuationConfig
+checkpoint 层级加载与冻结
+Seaquest 环境兼容修正
+```
+
+Seaquest 兼容修正：
+
+```python
+# 旧 BlendRL
+divers_vs = objs[:, -6:]
+surface_y = 45
+
+# GRAIL
+divers_vs = objs[:, -7:-1]
+surface_y = 46
+```
+
+当前项目如果继续做 Seaquest 对照，应增加测试：
+
+```text
+对象数量和顺序
+6 名潜水员对应的 tensor 切片
+玩家到达水面时的 y 坐标
+full_divers 是否真实触发
+救援奖励是否只触发一次
+```
+
+#### 13. GRAIL 分数解释
+
+GRAIL Stage 1 简化环境：
+
+```text
+Seaquest NeuralPPO：453 ± 93
+Seaquest BlendRL+Expert：983 ± 93
+```
+
+GRAIL Stage 2 完整环境：
+
+```text
+Seaquest NeuralPPO：2216
+Seaquest hard-coded BlendRL：4706
+```
+
+Stage 1 与 Stage 2 不能直接比较。
+
+GRAIL Stage 2 hard-coded BlendRL 与原论文 `4204` 较接近，但公开代码仍不足以严格复现 `4706`。
+
+#### 14. H²RL 分数解释
+
+H²RL 在自己的统一环境中报告：
+
+```text
+Seaquest PPO：3247 ± 881
+Seaquest BlendRL：117 ± 62
+```
+
+这与 BlendRL 原论文和 GRAIL Stage 2 严重冲突。
+
+截至 2026-07-13，未找到 H²RL 官方公开实现，因此不能确认低分来自：
+
+```text
+BlendRL 方法本身
+代码移植错误
+Seaquest 索引/坐标版本问题
+依赖版本
+奖励函数
+episode 口径
+checkpoint 选择
+训练配置
+```
+
+论文中只能将该结果表述为“后续工作中的复现冲突”。
+
+#### 15. 常见错误
+
+##### 15.1 Riverraid 只有个位数或几十分
+
+可能原因：
+
+```text
+把生命损失当成完整游戏结束
+```
+
+处理：
+
+```text
+--full-game-episodes
+```
+
+##### 15.2 argmax rollout 参数错误
+
+正确配置：
+
+```text
+--world-model-rollout-action-mode argmax
+--world-model-mc-rollouts 1
+```
+
+不要开启 CRN。
+
+##### 15.3 CRN 参数错误
+
+CRN 只能用于：
+
+```text
+rollout_action_mode = dist
+```
+
+##### 15.4 checkpoint 不兼容
+
+检查：
+
+```text
+模型结构
+对象数量
+动作数量
+参数键
+参数形状
+训练代码 Git SHA
+依赖版本
+```
+
+##### 15.5 重装后分数突然变化
+
+优先检查：
+
+```text
+gymnasium
+stable-baselines3
+ale-py
+ocatari
+hackatari
+ROM
+wrapper 顺序
+reward 文件
+```
+
+不要直接在共享 `.venv` 中升级。
+
+##### 15.6 纯 PPO 分数异常
+
+确认实际运行的类：
+
+```text
+ActorCritic
+```
+
+而不是：
+
+```text
+BlenderActorCritic
+```
+
+并检查 PPO `update_epochs` 是否与对照一致。
+
+#### 16. 实验注册表
+
+建议每个正式实验增加一行：
+
+```csv
+run_id,game,method,git_sha,env_hash,reward_fn,policy_ckpt,wm0,wm1,wm2,seed,total_steps,num_envs,num_steps,update_epochs,tau,horizon,rollout_mode,mc_rollouts,crn,full_game,episodes,mean,std,median,status,notes
+```
+
+`status` 只允许：
+
+```text
+planned
+running
+completed
+failed
+invalid
+archived
+```
+
+#### 17. 当前不支持内容
+
+当前项目不是 Web 服务：
+
+```text
+数据库：无
+HTTP API：无
+固定端口：无
+Docker Compose：未配置
+```
+
+GRAIL 官方仓库有 Dockerfile，但本项目尚未确认已完成可复现 Docker 化。
+
+若后续 Docker 化，需要：
+
+```text
+固定 CUDA 基础镜像 digest
+锁定 Python 依赖
+固定 OCAtari/HackAtari commit
+ROM 挂载和哈希校验
+checkpoint/out 挂载
+GPU 和共享内存配置
+多进程 worker 限制
+```
+
+#### 18. 参考来源
+
+- BlendRL: A Framework for Merging Symbolic and Neural Policy Learning, ICLR 2025, arXiv:2410.11689
+- GRAIL: Autonomous Concept Grounding for Neuro-Symbolic Reinforcement Learning, arXiv:2604.16871
+- Boosting deep Reinforcement Learning using pretraining with Logical Options, arXiv:2603.06565
+- `ml-research/blendrl`
+- `ml-research/grail`
 
 ---
 
-## 10. 已删除或归档的旧内容
+## 7. 当前项目状态
 
-以下旧内容不再作为当前状态维护：
+### 已完成
 
-1. `clean WM seed0 正在运行`。
-2. `clean WM seed2 排队等待 seed0 完成`。
-3. `GPU0 clean WM guard 当前状态`。
-4. 临时 PID、瞬时显存、瞬时 GPU 利用率。
-5. `out/51_riverraid_purewm_bd0_d05_seed0_l40sync_20260709` 作为保留历史目录的描述；该目录已被删除以避免误用。
-6. “Riverraid 三世界模型仍依赖 L40”的描述；当前所需 seed1 已同步到 yingnan。
-7. “评测只能从 run 目录加载 WM”的描述；当前支持 `--wm-checkpoint-paths`。
-8. “Riverraid 一条 done 就是一整局”的评测假设；当前必须使用 `--full-game-episodes`。
-9. “dist、K4、CRN 尚未实现”的待办描述；这些功能已经实现并测试。
-10. “K4 正式训练尚未启动”的描述；Seaquest 相关 K1/K4 消融已经运行，Riverraid 当前采用 argmax + K1 作为推荐评测配置。
+- Riverraid 三世界模型仲裁主流程。
+- argmax/dist rollout。
+- K-rollout 与 CRN。
+- 独立 planning RNG 和恢复 sidecar。
+- 直接加载三份 WM checkpoint。
+- Riverraid 完整游戏评测模式。
+- tau 扫描启动脚本。
+- 纯 PPO 入口审计。
+- BlendRL、GRAIL 公开代码初步对比。
+- GRAIL、BlendRL、H²RL 分数口径梳理。
 
----
+### 未完成或需确认
 
-## 11. 未完成事项
+- tau 四组最终 100 局结果。
+- 当前正式 baseline 的完整配置和 checkpoint SHA256。
+- 世界模型仲裁公式与当前代码逐行复核。
+- Seaquest K1/K4 最终固定评测。
+- 干净纯 PPO 训练和评测入口。
+- 当前环境完整 `pip freeze`。
+- OCAtari/HackAtari commit。
+- ROM 哈希。
+- GRAIL Figure 11 对应的完整配置和 checkpoint。
+- H²RL 官方实现是否后续公开。
 
-1. 等待 Riverraid 四组 tau 完成 100 局并生成最终汇总。
-2. 完成后优先比较均值、中位数和方差，而不是只看最高分。
-3. 与无世界模型的 Riverraid BlendRL 完整正式对照做同口径比较。
-4. 完成 Seaquest K1/K4 最终 20M 结果和固定 100 局评测，用于解释为何 Riverraid 默认采用 argmax + K1。
-5. 建立统一实验注册表，记录输出目录、seed、checkpoint、tau、rollout 模式和结论。
-6. 新建干净的纯 CNN PPO 训练和评测入口。
-7. 补充 ROM、CUDA、系统依赖和 TensorBoard 访问文档。
-8. 明确 `/home/yingnan/blendRL_k4_dev` 是否长期作为独立研究分支，还是后续合并回原项目。
+### 已知问题
 
-### 仍需补充的信息
+1. BlendRL 公开依赖未锁定，重装环境可能发生版本漂移。
+2. 当前公开 BlendRL 默认参数不是原论文参数。
+3. Seaquest 对象索引和水面坐标受依赖版本影响。
+4. GRAIL 论文 Stage 2 与公开默认奖励/命令存在不一致。
+5. H²RL 的 BlendRL 实现未公开，117 分原因无法定位。
+6. 当前项目共享 `.venv` 和 `out`，误升级或误删除风险高。
+7. 尚无可信的同口径纯 PPO 基线。
 
-为了完成最终文档，还需要：
+### 下一步建议
 
-1. Riverraid tau 扫描完成后的 `tau_sweep_summary.csv/json`。
-2. Riverraid 无世界模型 baseline 的完整 100 局同口径结果。
-3. Seaquest K1/K4 训练结束后的最终 checkpoint 和 100 局结果。
-4. 当前服务器 CUDA 驱动、ROM 路径和系统依赖清单。
-5. 未来纯 PPO 新入口的实际文件名和最终命令。
+按优先级执行：
+
+1. 导出当前环境、Git SHA、ROM 和 checkpoint 哈希。
+2. 完成 tau 四组 100 局评测并生成不可变汇总。
+3. 建立实验注册表，标记无效和非最终实验。
+4. 实现干净纯 PPO，并与无世界模型 BlendRL 使用同一评测脚本。
+5. 对 Seaquest 增加对象索引、坐标和救援触发单元测试。
+6. 在复制的独立环境中做依赖版本 A/B，不修改共享 `.venv`。
+7. 世界模型方法只与同代码、同奖励、同完整游戏口径的 baseline 比较。
+8. GRAIL 可作为可学习谓词模块参考，不直接作为已复现基线。
